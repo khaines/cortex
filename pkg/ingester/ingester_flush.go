@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/prometheus/common/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/prometheus/common/model"
 
 	"github.com/weaveworks/common/user"
@@ -92,7 +92,7 @@ func (i *Ingester) shouldFlushSeries(series *memorySeries, immediate bool) bool 
 
 func (i *Ingester) shouldFlushChunk(c *desc) bool {
 	// Chunks should be flushed if their oldest entry is older than MaxChunkAge
-	if model.Now().Sub(c.FirstTime) > i.schemaCfg.MaxChunkAge {
+	if model.Now().Sub(c.FirstTime) > i.cfg.MaxChunkAge {
 		return true
 	}
 
@@ -106,7 +106,7 @@ func (i *Ingester) shouldFlushChunk(c *desc) bool {
 
 func (i *Ingester) flushLoop(j int) {
 	defer func() {
-		log.Debug("Ingester.flushLoop() exited")
+		level.Debug(util.Logger).Log("msg", "Ingester.flushLoop() exited")
 		i.flushQueuesDone.Done()
 	}()
 
@@ -119,7 +119,7 @@ func (i *Ingester) flushLoop(j int) {
 
 		err := i.flushUserSeries(op.userID, op.fp, op.immediate)
 		if err != nil {
-			util.WithUserID(op.userID).Errorf("Failed to flush user: %v", err)
+			level.Error(util.WithUserID(op.userID, util.Logger)).Log("msg", "failed to flush user", "err", err)
 		}
 
 		// If we're exiting & we failed to flush, put the failed operation
@@ -167,6 +167,9 @@ func (i *Ingester) flushUserSeries(userID string, fp model.Fingerprint, immediat
 
 	// flush the chunks without locking the series, as we don't want to hold the series lock for the duration of the dynamo/s3 rpcs.
 	ctx := user.InjectOrgID(context.Background(), userID)
+	ctx, cancel := context.WithTimeout(ctx, i.cfg.FlushOpTimeout)
+	defer cancel() // releases resources if slowOperation completes before timeout elapses
+
 	err := i.flushChunks(ctx, fp, series.metric, chunks)
 	if err != nil {
 		return err
