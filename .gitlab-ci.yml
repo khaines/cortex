@@ -8,7 +8,8 @@ build:
   tags:
     - docker
     - cloud
-  only: cloud-master
+  only: 
+    - cloud-master
   script:
     - make
     
