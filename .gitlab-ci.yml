@@ -17,5 +17,6 @@ build:
     - cp -R $PWD $GOPATH/src/github.com/weaveworks
     - cd $GOPATH/src/github.com/weaveworks/cortex
     - dep ensure --update && make update-vendor
+    - export IMAGE_PREFIX=docker-opts-intel.darkside.ea.com/cortex-
     - make
     
