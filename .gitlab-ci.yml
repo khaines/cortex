@@ -11,6 +11,7 @@ build:
   only: 
     - cloud-master
   script:
+    - apt-get install time
     - go get -u github.com/golang/dep/cmd/dep
     - mkdir -p $GOPATH/src/github.com/weaveworks
     - cp -R $PWD $GOPATH/src/github.com/weaveworks
