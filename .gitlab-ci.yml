@@ -11,5 +11,6 @@ build:
   only: 
     - cloud-master
   script:
+    - dep ensure --update && make update-vendor
     - make
     
