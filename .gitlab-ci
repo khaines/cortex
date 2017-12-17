@@ -1,0 +1,14 @@
+image: src.ent.ea.com:8443/cloudeng/cloud-build-env
+
+stages:
+  - build
+  
+build:
+  stage: build
+  tags:
+    - docker
+    - cloud
+  only: cloud-master
+  script:
+    - make
+    
