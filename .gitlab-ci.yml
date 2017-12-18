@@ -1,4 +1,4 @@
-image: src.ent.ea.com:8443/cloudeng/cloud-build-env
+image: src.ent.ea.com:8443/cloudeng/cloud-build-env:1.9
 
 stages:
   - build
