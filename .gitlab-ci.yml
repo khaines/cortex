@@ -15,5 +15,7 @@ build:
     - mkdir -p $GOPATH/src/github.com/weaveworks
     - cp -R $PWD $GOPATH/src/github.com/weaveworks
     - cd $GOPATH/src/github.com/weaveworks/cortex
+    - make update-vendor
+    - dep ensure --update
     - make BUILD_IN_CONTAINER=true IMAGE_PREFIX=docker-opts-intel.darkside.ea.com/cortex-
     
