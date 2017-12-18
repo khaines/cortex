@@ -11,7 +11,7 @@ build:
   only: 
     - cloud-master
   script:
-    - apt-get install time
+    - apt-get install time protobuf-compiler
     - go get -u github.com/golang/dep/cmd/dep
     - mkdir -p $GOPATH/src/github.com/weaveworks
     - cp -R $PWD $GOPATH/src/github.com/weaveworks
