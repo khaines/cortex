@@ -68,7 +68,7 @@ ifeq ($(BUILD_IN_CONTAINER),true)
 
 $(EXES) $(PROTO_GOS) lint test shell: build-image/$(UPTODATE)
 	@mkdir -p $(shell pwd)/.pkg
-	$(SUDO) time docker run $(RM) -ti \
+	$(SUDO) time docker run $(RM) -t \
 		-v $(shell pwd)/.pkg:/go/pkg \
 		-v $(shell pwd):/go/src/github.com/weaveworks/cortex \
 		$(IMAGE_PREFIX)build-image $@;
