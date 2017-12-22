@@ -11,15 +11,11 @@ build:
   only: 
     - cloud-master
   script:
-    - apt-get update
-    - apt-get install -y python-requests python-yaml file jq unzip libprotobuf-dev
     - apt-get install -y time
     - go get -u github.com/golang/dep/cmd/dep
-    - go get github.com/gogo/protobuf/protoc-gen-gogoslick
     - mkdir -p $GOPATH/src/github.com/weaveworks
     - cp -R $PWD $GOPATH/src/github.com/weaveworks
     - cd $GOPATH/src/github.com/weaveworks/cortex
-    - dep ensure
-    - dep ensure --update && make update-vendor
+    - make update-vendor
     - make BUILD_IN_CONTAINER=true IMAGE_PREFIX=docker-opts-intel.darkside.ea.com/cortex-
     
