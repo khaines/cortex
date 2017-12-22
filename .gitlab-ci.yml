@@ -18,4 +18,7 @@ build:
     - cd $GOPATH/src/github.com/weaveworks/cortex
     - make update-vendor
     - make BUILD_IN_CONTAINER=true IMAGE_PREFIX=docker-opts-intel.darkside.ea.com/cortex-
+    - docker login docker-ops-intel.darkside.ea.com -u $DOCKER_OPSINTEL_USERNAME -p $DOCKER_OPSINTEL_PASSWORD
+    - ./tools/push-images IMAGE_PREFIX=docker-opts-intel.darkside.ea.com/cortex-
+    
     
