@@ -1,6 +1,7 @@
 package chunk
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"testing"
@@ -15,16 +16,15 @@ import (
 
 const userID = "userID"
 
-func dummyChunk() Chunk {
-	return dummyChunkFor(model.Metric{
+func dummyChunk(now model.Time) Chunk {
+	return dummyChunkFor(now, model.Metric{
 		model.MetricNameLabel: "foo",
 		"bar":  "baz",
 		"toms": "code",
 	})
 }
 
-func dummyChunkFor(metric model.Metric) Chunk {
-	now := model.Now()
+func dummyChunkFor(now model.Time, metric model.Metric) Chunk {
 	cs, _ := chunk.New().Add(model.SamplePair{Timestamp: now, Value: 0})
 	chunk := NewChunk(
 		userID,
@@ -43,38 +43,40 @@ func dummyChunkFor(metric model.Metric) Chunk {
 }
 
 func TestChunkCodec(t *testing.T) {
+	dummy := dummyChunk(model.Now())
+	decodeContext := NewDecodeContext()
 	for i, c := range []struct {
 		chunk Chunk
 		err   error
 		f     func(*Chunk, []byte)
 	}{
 		// Basic round trip
-		{chunk: dummyChunk()},
+		{chunk: dummy},
 
 		// Checksum should fail
 		{
-			chunk: dummyChunk(),
+			chunk: dummy,
 			err:   ErrInvalidChecksum,
 			f:     func(_ *Chunk, buf []byte) { buf[4]++ },
 		},
 
 		// Checksum should fail
 		{
-			chunk: dummyChunk(),
+			chunk: dummy,
 			err:   ErrInvalidChecksum,
 			f:     func(c *Chunk, _ []byte) { c.Checksum = 123 },
 		},
 
 		// Metadata test should fail
 		{
-			chunk: dummyChunk(),
+			chunk: dummy,
 			err:   ErrWrongMetadata,
 			f:     func(c *Chunk, _ []byte) { c.Fingerprint++ },
 		},
 
 		// Metadata test should fail
 		{
-			chunk: dummyChunk(),
+			chunk: dummy,
 			err:   ErrWrongMetadata,
 			f:     func(c *Chunk, _ []byte) { c.UserID = "foo" },
 		},
@@ -90,7 +92,7 @@ func TestChunkCodec(t *testing.T) {
 				c.f(&have, buf)
 			}
 
-			err = have.Decode(buf)
+			err = have.Decode(decodeContext, buf)
 			require.Equal(t, c.err, errors.Cause(err))
 
 			if c.err == nil {
@@ -137,11 +139,12 @@ func TestChunksToMatrix(t *testing.T) {
 		"bar":  "baz",
 		"toms": "code",
 	}
-	chunk1 := dummyChunkFor(metric)
-	chunk1Samples, err := chunk1.Samples()
+	now := model.Now()
+	chunk1 := dummyChunkFor(now, metric)
+	chunk1Samples, err := chunk1.Samples(chunk1.From, chunk1.Through)
 	require.NoError(t, err)
-	chunk2 := dummyChunkFor(metric)
-	chunk2Samples, err := chunk2.Samples()
+	chunk2 := dummyChunkFor(now, metric)
+	chunk2Samples, err := chunk2.Samples(chunk2.From, chunk2.Through)
 	require.NoError(t, err)
 
 	ss1 := &model.SampleStream{
@@ -155,8 +158,8 @@ func TestChunksToMatrix(t *testing.T) {
 		"bar":  "baz",
 		"toms": "code",
 	}
-	chunk3 := dummyChunkFor(otherMetric)
-	chunk3Samples, err := chunk3.Samples()
+	chunk3 := dummyChunkFor(now, otherMetric)
+	chunk3Samples, err := chunk3.Samples(chunk3.From, chunk3.Through)
 	require.NoError(t, err)
 
 	ss2 := &model.SampleStream{
@@ -183,11 +186,73 @@ func TestChunksToMatrix(t *testing.T) {
 			},
 		},
 	} {
-		matrix, err := chunksToMatrix(c.chunks)
+		matrix, err := chunksToMatrix(context.Background(), c.chunks, chunk1.From, chunk3.Through)
 		require.NoError(t, err)
 
 		sort.Sort(matrix)
 		sort.Sort(c.expectedMatrix)
 		require.Equal(t, c.expectedMatrix, matrix)
+	}
+}
+
+func benchmarkChunk(now model.Time) Chunk {
+	// This is a real example from Kubernetes' embedded cAdvisor metrics, lightly obfuscated
+	return dummyChunkFor(now, model.Metric{
+		model.MetricNameLabel:              "container_cpu_usage_seconds_total",
+		"beta_kubernetes_io_arch":          "amd64",
+		"beta_kubernetes_io_instance_type": "c3.somesize",
+		"beta_kubernetes_io_os":            "linux",
+		"container_name":                   "some-name",
+		"cpu":                              "cpu01",
+		"failure_domain_beta_kubernetes_io_region": "somewhere-1",
+		"failure_domain_beta_kubernetes_io_zone":   "somewhere-1b",
+		"id":       "/kubepods/burstable/pod6e91c467-e4c5-11e7-ace3-0a97ed59c75e/a3c8498918bd6866349fed5a6f8c643b77c91836427fb6327913276ebc6bde28",
+		"image":    "registry/organisation/name@sha256:dca3d877a80008b45d71d7edc4fd2e44c0c8c8e7102ba5cbabec63a374d1d506",
+		"instance": "ip-111-11-1-11.ec2.internal",
+		"job":      "kubernetes-cadvisor",
+		"kubernetes_io_hostname": "ip-111-11-1-11",
+		"monitor":                "prod",
+		"name":                   "k8s_some-name_some-other-name-5j8s8_kube-system_6e91c467-e4c5-11e7-ace3-0a97ed59c75e_0",
+		"namespace":              "kube-system",
+		"pod_name":               "some-other-name-5j8s8",
+	})
+}
+
+func BenchmarkEncode(b *testing.B) {
+	chunk := dummyChunk(model.Now())
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		chunk.Encode()
+	}
+}
+
+func BenchmarkDecode1(b *testing.B)     { benchmarkDecode(b, 1) }
+func BenchmarkDecode100(b *testing.B)   { benchmarkDecode(b, 100) }
+func BenchmarkDecode10000(b *testing.B) { benchmarkDecode(b, 10000) }
+
+func benchmarkDecode(b *testing.B, batchSize int) {
+	chunk := benchmarkChunk(model.Now())
+	buf, err := chunk.Encode()
+	require.NoError(b, err)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		decodeContext := NewDecodeContext()
+		b.StopTimer()
+		chunks := make([]Chunk, batchSize)
+		// Copy across the metadata so the check works out ok
+		for j := 0; j < batchSize; j++ {
+			chunks[j] = chunk
+			chunks[j].Metric = nil
+			chunks[j].Data = nil
+		}
+		b.StartTimer()
+		for j := 0; j < batchSize; j++ {
+			err := chunks[j].Decode(decodeContext, buf)
+			require.NoError(b, err)
+		}
 	}
 }

@@ -6,9 +6,14 @@ import (
 
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
+	otlog "github.com/opentracing/opentracing-go/log"
 	"github.com/prometheus/client_golang/prometheus"
 	oldcontext "golang.org/x/net/context"
 )
+
+// DefBuckets are histogram buckets for the response time (in seconds)
+// of a network service, including one that is responding very slowly.
+var DefBuckets = []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 25, 50, 100}
 
 // Collector describes something that collects data before and/or after a task.
 type Collector interface {
@@ -140,6 +145,7 @@ func CollectedRequest(ctx context.Context, method string, col Collector, toStatu
 
 	if err != nil {
 		ext.Error.Set(sp, true)
+		sp.LogFields(otlog.Error(err))
 	}
 	sp.Finish()
 

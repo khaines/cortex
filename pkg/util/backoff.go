@@ -1,6 +1,8 @@
 package util
 
 import (
+	"context"
+	"fmt"
 	"math/rand"
 	"time"
 )
@@ -15,17 +17,16 @@ type BackoffConfig struct {
 // Backoff implements exponential backoff with randomized wait times
 type Backoff struct {
 	cfg        BackoffConfig
-	done       <-chan struct{}
+	ctx        context.Context
 	numRetries int
-	cancelled  bool
 	duration   time.Duration
 }
 
-// NewBackoff creates a Backoff object. Pass a 'done' channel that can be closed to terminate the operation.
-func NewBackoff(cfg BackoffConfig, done <-chan struct{}) *Backoff {
+// NewBackoff creates a Backoff object. Pass a Context that can also terminate the operation.
+func NewBackoff(ctx context.Context, cfg BackoffConfig) *Backoff {
 	return &Backoff{
 		cfg:      cfg,
-		done:     done,
+		ctx:      ctx,
 		duration: cfg.MinBackoff,
 	}
 }
@@ -33,13 +34,24 @@ func NewBackoff(cfg BackoffConfig, done <-chan struct{}) *Backoff {
 // Reset the Backoff back to its initial condition
 func (b *Backoff) Reset() {
 	b.numRetries = 0
-	b.cancelled = false
 	b.duration = b.cfg.MinBackoff
 }
 
 // Ongoing returns true if caller should keep going
 func (b *Backoff) Ongoing() bool {
-	return !b.cancelled && (b.cfg.MaxRetries == 0 || b.numRetries < b.cfg.MaxRetries)
+	// Stop if Context has errored or max retry count is exceeded
+	return b.ctx.Err() == nil && (b.cfg.MaxRetries == 0 || b.numRetries < b.cfg.MaxRetries)
+}
+
+// Err returns the reason for terminating the backoff, or nil if it didn't terminate
+func (b *Backoff) Err() error {
+	if b.ctx.Err() != nil {
+		return b.ctx.Err()
+	}
+	if b.cfg.MaxRetries != 0 && b.numRetries >= b.cfg.MaxRetries {
+		return fmt.Errorf("terminated after %d retries", b.numRetries)
+	}
+	return nil
 }
 
 // NumRetries returns the number of retries so far
@@ -48,25 +60,25 @@ func (b *Backoff) NumRetries() int {
 }
 
 // Wait sleeps for the backoff time then increases the retry count and backoff time
-// Returns immediately if done channel is closed
+// Returns immediately if Context is terminated
 func (b *Backoff) Wait() {
 	b.numRetries++
 	b.WaitWithoutCounting()
 }
 
 // WaitWithoutCounting sleeps for the backoff time then increases backoff time
-// Returns immediately if done channel is closed
+// Returns immediately if Context is terminated
 func (b *Backoff) WaitWithoutCounting() {
+	// Based on the "Full Jitter" approach from https://www.awsarchitectureblog.com/2015/03/backoff.html
+	// sleep = random_between(0, min(cap, base * 2 ** attempt))
 	if b.Ongoing() {
+		sleepTime := time.Duration(rand.Int63n(int64(b.duration)))
 		select {
-		case <-b.done:
-			b.cancelled = true
-		case <-time.After(b.duration):
+		case <-b.ctx.Done():
+		case <-time.After(sleepTime):
 		}
 	}
-	// Based on the "Decorrelated Jitter" approach from https://www.awsarchitectureblog.com/2015/03/backoff.html
-	// sleep = min(cap, random_between(base, sleep * 3))
-	b.duration = b.cfg.MinBackoff + time.Duration(rand.Int63n(int64((b.duration*3)-b.cfg.MinBackoff)))
+	b.duration = b.duration * 2
 	if b.duration > b.cfg.MaxBackoff {
 		b.duration = b.cfg.MaxBackoff
 	}

@@ -155,6 +155,7 @@ loop:
 	for {
 		select {
 		case <-autoJoinAfter:
+			level.Debug(util.Logger).Log("msg", "JoinAfter expired")
 			// Will only fire once, after auto join timeout.  If we haven't entered "JOINING" state,
 			// then pick some tokens and enter ACTIVE state.
 			if i.state == ring.PENDING {
@@ -324,7 +325,7 @@ func (i *Ingester) processShutdown() {
 	flushRequired := true
 	if i.cfg.ClaimOnRollout {
 		if err := i.transferChunks(); err != nil {
-			level.Error(util.Logger).Log("msg", "Failed to transfer chunks to another ingester: %v", err)
+			level.Error(util.Logger).Log("msg", "Failed to transfer chunks to another ingester", "err", err)
 		} else {
 			flushRequired = false
 		}
@@ -358,7 +359,7 @@ func (i *Ingester) transferChunks() error {
 	}
 
 	level.Info(util.Logger).Log("msg", "sending chunks to ingester", "ingester", targetIngester.Addr)
-	c, err := i.cfg.ingesterClientFactory(targetIngester.Addr, i.cfg.SearchPendingFor)
+	c, err := i.cfg.ingesterClientFactory(targetIngester.Addr, i.cfg.SearchPendingFor, false)
 	if err != nil {
 		return err
 	}
@@ -424,11 +425,12 @@ func (i *Ingester) findTargetIngester() (*ring.IngesterDesc, error) {
 	for {
 		ingester, err := findIngester()
 		if err != nil {
-			level.Error(util.Logger).Log("msg", "Error looking for pending ingester: %v", err)
+			level.Debug(util.Logger).Log("msg", "Error looking for pending ingester", "err", err)
 			if time.Now().Before(deadline) {
 				time.Sleep(i.cfg.SearchPendingFor / pendingSearchIterations)
 				continue
 			} else {
+				level.Warn(util.Logger).Log("msg", "Could not find pending ingester before deadline", "err", err)
 				return nil, err
 			}
 		}

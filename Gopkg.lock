@@ -273,7 +273,7 @@
   branch = "master"
   name = "github.com/grpc-ecosystem/grpc-opentracing"
   packages = ["go/otgrpc"]
-  revision = "ef7d6c8df7564c20c0a19ed9737f6d67990c61fa"
+  revision = "0e7658f8ee99ee5aa683e2a032b8880091b7a055"
 
 [[projects]]
   name = "github.com/hashicorp/consul"
@@ -482,7 +482,7 @@
 [[projects]]
   name = "github.com/prometheus/alertmanager"
   packages = ["api","config","dispatch","inhibit","nflog","nflog/nflogpb","notify","pkg/parse","provider","provider/mem","silence","silence/silencepb","template","template/internal/deftmpl","types","ui"]
-  revision = "4a8e71069177280d0317ccd80a8201a06f2d8139"
+  revision = "fb713f6d8239b57c646cae30f78e8b4b8861a1aa"
 
 [[projects]]
   name = "github.com/prometheus/client_golang"
@@ -601,7 +601,7 @@
   branch = "master"
   name = "github.com/weaveworks/common"
   packages = ["aws","errors","httpgrpc","httpgrpc/server","instrument","logging","mflag","mflagext","middleware","mtime","server","signals","test","tracing","user"]
-  revision = "57600de7028ee2b8070f1696250887ad243b786c"
+  revision = "bf7fd2fdfaa72bc4bf23b057af82aa3c0dbdc40c"
 
 [[projects]]
   name = "github.com/weaveworks/mesh"
@@ -682,9 +682,9 @@
 
 [[projects]]
   name = "google.golang.org/grpc"
-  packages = [".","codes","credentials","credentials/oauth","grpclb/grpc_lb_v1","grpclog","internal","keepalive","metadata","naming","peer","stats","status","tap","transport"]
-  revision = "d2e1b51f33ff8c5e4a15560ff049d200e83726c5"
-  version = "v1.3.0"
+  packages = [".","balancer","balancer/base","balancer/roundrobin","codes","connectivity","credentials","credentials/oauth","encoding","encoding/gzip","grpclb/grpc_lb_v1/messages","grpclog","internal","keepalive","metadata","naming","peer","resolver","resolver/dns","resolver/passthrough","stats","status","tap","transport"]
+  revision = "7cea4cc846bcf00cbb27595b07da5de875ef7de9"
+  version = "v1.9.1"
 
 [[projects]]
   name = "gopkg.in/alecthomas/kingpin.v2"
@@ -723,6 +723,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "964891df04ed2e61f4a7b2c31717a5ef815ac247a8e7a05fe811b0fdfb704f73"
+  inputs-digest = "580b7d294648ad7793e7cac316258d28563ccc8de3cca6dcab2c78fe33851db2"
   solver-name = "gps-cdcl"
   solver-version = 1

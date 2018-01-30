@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-kit/kit/log/level"
 	ot "github.com/opentracing/opentracing-go"
+	otlog "github.com/opentracing/opentracing-go/log"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -47,7 +48,7 @@ const (
 var backoffConfig = util.BackoffConfig{
 	// Backoff for dynamoDB requests, to match AWS lib - see:
 	// https://github.com/aws/aws-sdk-go/blob/master/service/dynamodb/customizations.go
-	MinBackoff: 50 * time.Millisecond,
+	MinBackoff: 100 * time.Millisecond,
 	MaxBackoff: 50 * time.Second,
 	MaxRetries: 20,
 }
@@ -108,7 +109,8 @@ type DynamoDBConfig struct {
 	DynamoDB               util.URLValue
 	APILimit               float64
 	ApplicationAutoScaling util.URLValue
-	DynamoDBChunkGangSize  int
+	ChunkGangSize          int
+	ChunkGetMaxParallelism int
 }
 
 // RegisterFlags adds the flags required to config this to the given FlagSet
@@ -117,7 +119,8 @@ func (cfg *DynamoDBConfig) RegisterFlags(f *flag.FlagSet) {
 		"If only region is specified as a host, proper endpoint will be deduced. Use inmemory:///<table-name> to use a mock in-memory implementation.")
 	f.Float64Var(&cfg.APILimit, "dynamodb.api-limit", 2.0, "DynamoDB table management requests per second limit.")
 	f.Var(&cfg.ApplicationAutoScaling, "applicationautoscaling.url", "ApplicationAutoscaling endpoint URL with escaped Key and Secret encoded.")
-	f.IntVar(&cfg.DynamoDBChunkGangSize, "dynamodb.chunk.gang.size", 10, "Number of chunks to group together to parallelise fetches (zero to disable)")
+	f.IntVar(&cfg.ChunkGangSize, "dynamodb.chunk.gang.size", 10, "Number of chunks to group together to parallelise fetches (zero to disable)")
+	f.IntVar(&cfg.ChunkGetMaxParallelism, "dynamodb.chunk.get.max.parallelism", 32, "Max number of chunk-get operations to start in parallel")
 }
 
 // AWSStorageConfig specifies config for storing data on AWS.
@@ -191,7 +194,7 @@ func (a awsStorageClient) BatchWrite(ctx context.Context, input WriteBatch) erro
 	outstanding := input.(dynamoDBWriteBatch)
 	unprocessed := dynamoDBWriteBatch{}
 
-	backoff := util.NewBackoff(backoffConfig, ctx.Done())
+	backoff := util.NewBackoff(ctx, backoffConfig)
 	defer func() {
 		dynamoQueryRetryCount.WithLabelValues("BatchWrite").Observe(float64(backoff.NumRetries()))
 	}()
@@ -246,13 +249,13 @@ func (a awsStorageClient) BatchWrite(ctx context.Context, input WriteBatch) erro
 	}
 
 	if valuesLeft := outstanding.Len() + unprocessed.Len(); valuesLeft > 0 {
-		return fmt.Errorf("failed to write chunk after %d retries, %d values remaining", backoff.NumRetries(), valuesLeft)
+		return fmt.Errorf("failed to write chunk, %d values remaining: %s", valuesLeft, backoff.Err())
 	}
-	return nil
+	return backoff.Err()
 }
 
 func (a awsStorageClient) QueryPages(ctx context.Context, query IndexQuery, callback func(result ReadBatch, lastPage bool) (shouldContinue bool)) error {
-	sp, ctx := ot.StartSpanFromContext(ctx, "QueryPages", ot.Tag{"tableName", query.TableName}, ot.Tag{"hashValue", query.HashValue})
+	sp, ctx := ot.StartSpanFromContext(ctx, "QueryPages", ot.Tag{Key: "tableName", Value: query.TableName}, ot.Tag{Key: "hashValue", Value: query.HashValue})
 	defer sp.Finish()
 
 	input := &dynamodb.QueryInput{
@@ -319,7 +322,7 @@ func (a awsStorageClient) QueryPages(ctx context.Context, query IndexQuery, call
 }
 
 func (a awsStorageClient) queryPage(ctx context.Context, input *dynamodb.QueryInput, page dynamoDBRequest) (dynamoDBReadResponse, error) {
-	backoff := util.NewBackoff(backoffConfig, ctx.Done())
+	backoff := util.NewBackoff(ctx, backoffConfig)
 	defer func() {
 		dynamoQueryRetryCount.WithLabelValues("queryPage").Observe(float64(backoff.NumRetries()))
 	}()
@@ -350,7 +353,7 @@ func (a awsStorageClient) queryPage(ctx context.Context, input *dynamodb.QueryIn
 		queryOutput := page.Data().(*dynamodb.QueryOutput)
 		return dynamoDBReadResponse(queryOutput.Items), nil
 	}
-	return nil, fmt.Errorf("QueryPage error: maxRetries exceeded for table %v, last error %v", *input.TableName, err)
+	return nil, fmt.Errorf("QueryPage error: %s for table %v, last error %v", backoff.Err(), *input.TableName, err)
 }
 
 type dynamoDBRequest interface {
@@ -423,6 +426,7 @@ type chunksPlusError struct {
 func (a awsStorageClient) GetChunks(ctx context.Context, chunks []Chunk) ([]Chunk, error) {
 	sp, ctx := ot.StartSpanFromContext(ctx, "GetChunks")
 	defer sp.Finish()
+	sp.LogFields(otlog.Int("chunks requested", len(chunks)))
 
 	var (
 		s3Chunks       []Chunk
@@ -448,9 +452,13 @@ func (a awsStorageClient) GetChunks(ctx context.Context, chunks []Chunk) ([]Chun
 		return s3Chunks, err
 	}
 
-	gangSize := a.cfg.DynamoDBChunkGangSize * dynamoDBMaxReadBatchSize
+	gangSize := a.cfg.ChunkGangSize * dynamoDBMaxReadBatchSize
 	if gangSize == 0 { // zero means turn feature off
 		gangSize = len(dynamoDBChunks)
+	} else {
+		if len(dynamoDBChunks)/gangSize > a.cfg.ChunkGetMaxParallelism {
+			gangSize = len(dynamoDBChunks)/a.cfg.ChunkGetMaxParallelism + 1
+		}
 	}
 
 	results := make(chan chunksPlusError)
@@ -473,7 +481,9 @@ func (a awsStorageClient) GetChunks(ctx context.Context, chunks []Chunk) ([]Chun
 			finalChunks = append(finalChunks, in.chunks...)
 		}
 	}
+	sp.LogFields(otlog.Int("chunks fetched", len(finalChunks)))
 	if err != nil {
+		sp.LogFields(otlog.String("error", err.Error()))
 		return nil, err
 	}
 
@@ -530,7 +540,8 @@ func (a awsStorageClient) getS3Chunk(ctx context.Context, chunk Chunk) (Chunk, e
 	if err != nil {
 		return Chunk{}, err
 	}
-	if err := chunk.Decode(buf); err != nil {
+	decodeContext := NewDecodeContext()
+	if err := chunk.Decode(decodeContext, buf); err != nil {
 		return Chunk{}, err
 	}
 	return chunk, nil
@@ -544,7 +555,7 @@ var placeholder = []byte{'c'}
 // Structure is identical to BatchWrite(), but operating on different datatypes
 // so cannot share implementation.  If you fix a bug here fix it there too.
 func (a awsStorageClient) getDynamoDBChunks(ctx context.Context, chunks []Chunk) ([]Chunk, error) {
-	sp, ctx := ot.StartSpanFromContext(ctx, "getDynamoDBChunks", ot.Tag{"numChunks", len(chunks)})
+	sp, ctx := ot.StartSpanFromContext(ctx, "getDynamoDBChunks", ot.Tag{Key: "numChunks", Value: len(chunks)})
 	defer sp.Finish()
 	outstanding := dynamoDBReadRequest{}
 	chunksByKey := map[string]Chunk{}
@@ -557,7 +568,7 @@ func (a awsStorageClient) getDynamoDBChunks(ctx context.Context, chunks []Chunk)
 
 	result := []Chunk{}
 	unprocessed := dynamoDBReadRequest{}
-	backoff := util.NewBackoff(backoffConfig, ctx.Done())
+	backoff := util.NewBackoff(ctx, backoffConfig)
 	defer func() {
 		dynamoQueryRetryCount.WithLabelValues("getDynamoDBChunks").Observe(float64(backoff.NumRetries()))
 	}()
@@ -619,13 +630,14 @@ func (a awsStorageClient) getDynamoDBChunks(ctx context.Context, chunks []Chunk)
 
 	if valuesLeft := outstanding.Len() + unprocessed.Len(); valuesLeft > 0 {
 		// Return the chunks we did fetch, because partial results may be useful
-		return result, fmt.Errorf("failed to query chunks after %d retries, %d values remaining", backoff.NumRetries(), valuesLeft)
+		return result, fmt.Errorf("failed to query chunks, %d values remaining: %s", valuesLeft, backoff.Err())
 	}
 	return result, nil
 }
 
 func processChunkResponse(response *dynamodb.BatchGetItemOutput, chunksByKey map[string]Chunk) ([]Chunk, error) {
 	result := []Chunk{}
+	decodeContext := NewDecodeContext()
 	for _, items := range response.Responses {
 		for _, item := range items {
 			key, ok := item[hashKey]
@@ -643,7 +655,7 @@ func processChunkResponse(response *dynamodb.BatchGetItemOutput, chunksByKey map
 				return nil, fmt.Errorf("Got response from DynamoDB with no value: %+v", item)
 			}
 
-			if err := chunk.Decode(buf.B); err != nil {
+			if err := chunk.Decode(decodeContext, buf.B); err != nil {
 				return nil, err
 			}
 

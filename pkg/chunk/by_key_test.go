@@ -1,9 +1,12 @@
 package chunk
 
 import (
+	"math/rand"
 	"reflect"
+	"sort"
 	"testing"
 
+	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -95,5 +98,34 @@ func TestNWayIntersect(t *testing.T) {
 		if !reflect.DeepEqual(tc.want, have) {
 			assert.Equal(t, tc.want, have)
 		}
+	}
+}
+
+func BenchmarkByKeyLess(b *testing.B) {
+	now := model.Now()
+	a := ByKey{dummyChunk(now), dummyChunk(now)}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		a.Less(0, 1)
+	}
+}
+
+func BenchmarkByKeySort100(b *testing.B)   { benchmarkByKeySort(b, 100) }
+func BenchmarkByKeySort1000(b *testing.B)  { benchmarkByKeySort(b, 1000) }
+func BenchmarkByKeySort10000(b *testing.B) { benchmarkByKeySort(b, 10000) }
+
+func benchmarkByKeySort(b *testing.B, batchSize int) {
+	chunks := []Chunk{}
+	for i := 0; i < batchSize; i++ {
+		chunk := dummyChunk(model.Now() + model.Time(rand.Intn(batchSize)))
+		chunks = append(chunks, chunk)
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		sort.Sort(ByKey(chunks))
 	}
 }

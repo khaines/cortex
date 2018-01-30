@@ -35,7 +35,7 @@ func newTestChunkStore(t *testing.T, cfg StoreConfig) *Store {
 }
 
 func createSampleStreamFrom(chunk Chunk) (*model.SampleStream, error) {
-	samples, err := chunk.Samples()
+	samples, err := chunk.Samples(chunk.From, chunk.Through)
 	if err != nil {
 		return nil, err
 	}
@@ -86,11 +86,11 @@ func TestChunkStore_Get(t *testing.T) {
 		"toms": "code",
 	}
 
-	fooChunk1 := dummyChunkFor(fooMetric1)
-	fooChunk2 := dummyChunkFor(fooMetric2)
+	fooChunk1 := dummyChunkFor(now, fooMetric1)
+	fooChunk2 := dummyChunkFor(now, fooMetric2)
 
-	barChunk1 := dummyChunkFor(barMetric1)
-	barChunk2 := dummyChunkFor(barMetric2)
+	barChunk1 := dummyChunkFor(now, barMetric1)
+	barChunk2 := dummyChunkFor(now, barMetric2)
 
 	fooSampleStream1, err := createSampleStreamFrom(fooChunk1)
 	require.NoError(t, err)
@@ -222,6 +222,8 @@ func TestChunkStore_Get(t *testing.T) {
 
 				sort.Sort(ByFingerprint(matrix1))
 				if !reflect.DeepEqual(tc.expect, matrix1) {
+					t.Fatalf("jml\nstart = %#v\nnow = %#v\nfooChunk1 = %#v\nfooChunk2 = %#v\nbarChunk1 = %#v\nbarChunk2 = %#v\n",
+						now.Add(-time.Hour), now, fooChunk1, fooChunk2, barChunk1, barChunk2)
 					t.Fatalf("%s: wrong chunks - %s", tc.query, test.Diff(tc.expect, matrix1))
 				}
 
@@ -251,13 +253,13 @@ func TestChunkStore_getMetricNameChunks(t *testing.T) {
 	ctx := user.InjectOrgID(context.Background(), userID)
 	now := model.Now()
 	metricName := "foo"
-	chunk1 := dummyChunkFor(model.Metric{
+	chunk1 := dummyChunkFor(now, model.Metric{
 		model.MetricNameLabel: "foo",
 		"bar":  "baz",
 		"toms": "code",
 		"flip": "flop",
 	})
-	chunk2 := dummyChunkFor(model.Metric{
+	chunk2 := dummyChunkFor(now, model.Metric{
 		model.MetricNameLabel: "foo",
 		"bar":  "beep",
 		"toms": "code",
@@ -428,7 +430,7 @@ func TestChunkStoreRandom(t *testing.T) {
 			for _, chunk := range chunks {
 				assert.False(t, chunk.From.After(endTime))
 				assert.False(t, chunk.Through.Before(startTime))
-				samples, err := chunk.Samples()
+				samples, err := chunk.Samples(chunk.From, chunk.Through)
 				assert.NoError(t, err)
 				assert.Equal(t, 1, len(samples))
 				// TODO verify chunk contents
@@ -496,7 +498,7 @@ func TestChunkStoreLeastRead(t *testing.T) {
 		for _, chunk := range chunks {
 			assert.False(t, chunk.From.After(endTime))
 			assert.False(t, chunk.Through.Before(startTime))
-			samples, err := chunk.Samples()
+			samples, err := chunk.Samples(chunk.From, chunk.Through)
 			assert.NoError(t, err)
 			assert.Equal(t, 1, len(samples))
 		}

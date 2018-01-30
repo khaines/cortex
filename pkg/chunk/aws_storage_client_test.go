@@ -480,10 +480,11 @@ func TestAWSStorageClientChunks(t *testing.T) {
 		name           string
 		provisionedErr int
 		gangSize       int
+		maxParallelism int
 	}{
-		{"DynamoDB chunks", 0, 10},
-		{"DynamoDB chunks with parallel fetch disabled", 0, 0},
-		{"DynamoDB chunks retry logic", 2, 10},
+		{"DynamoDB chunks", 0, 10, 20},
+		{"DynamoDB chunks with parallel fetch disabled", 0, 0, 20},
+		{"DynamoDB chunks retry logic", 2, 10, 20},
 	}
 
 	for _, tt := range tests {
@@ -508,7 +509,7 @@ func TestAWSStorageClientChunks(t *testing.T) {
 
 			client := awsStorageClient{
 				cfg: AWSStorageConfig{
-					DynamoDBConfig: DynamoDBConfig{DynamoDBChunkGangSize: tt.gangSize},
+					DynamoDBConfig: DynamoDBConfig{ChunkGangSize: tt.gangSize, ChunkGetMaxParallelism: tt.maxParallelism},
 				},
 				DynamoDB:                dynamoDB,
 				schemaCfg:               schemaConfig,
@@ -530,7 +531,7 @@ func testStorageClientChunks(t *testing.T, client StorageClient) {
 	for i := 0; i < 50; i++ {
 		chunks := []Chunk{}
 		for j := 0; j < batchSize; j++ {
-			chunk := dummyChunkFor(model.Metric{
+			chunk := dummyChunkFor(model.Now(), model.Metric{
 				model.MetricNameLabel: "foo",
 				"index":               model.LabelValue(strconv.Itoa(i*batchSize + j)),
 			})

@@ -18,14 +18,13 @@ import (
 	"github.com/go-kit/kit/log/level"
 	amconfig "github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/log"
+
 	"github.com/weaveworks/common/instrument"
 	"github.com/weaveworks/common/user"
-	"github.com/weaveworks/mesh"
-
 	"github.com/weaveworks/cortex/pkg/configs"
 	configs_client "github.com/weaveworks/cortex/pkg/configs/client"
 	"github.com/weaveworks/cortex/pkg/util"
+	"github.com/weaveworks/mesh"
 )
 
 var backoffConfig = util.BackoffConfig{
@@ -333,7 +332,7 @@ func (am *MultitenantAlertmanager) Stop() {
 // Load the full set of configurations from the server, retrying with backoff
 // until we can get them.
 func (am *MultitenantAlertmanager) loadAllConfigs() map[string]configs.View {
-	backoff := util.NewBackoff(backoffConfig, nil)
+	backoff := util.NewBackoff(context.Background(), backoffConfig)
 	for {
 		cfgs, err := am.poll()
 		if err == nil {
@@ -462,7 +461,7 @@ func (am *MultitenantAlertmanager) newAlertmanager(userID string, amConfig *amco
 	newAM, err := New(&Config{
 		UserID:      userID,
 		DataDir:     am.cfg.DataDir,
-		Logger:      log.NewLogger(os.Stderr),
+		Logger:      util.Logger,
 		MeshRouter:  am.meshRouter,
 		Retention:   am.cfg.Retention,
 		ExternalURL: am.cfg.ExternalURL.URL,
