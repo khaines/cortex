@@ -47,6 +47,7 @@ func (r mockRing) IsHealthy(ingester *ring.IngesterDesc) bool {
 type mockIngester struct {
 	client.IngesterClient
 	happy bool
+	stats client.UsersStatsResponse
 }
 
 func (i mockIngester) Push(ctx context.Context, in *client.WriteRequest, opts ...grpc.CallOption) (*client.WriteResponse, error) {
@@ -82,6 +83,10 @@ func (i mockIngester) Query(ctx context.Context, in *client.QueryRequest, opts .
 			},
 		},
 	}, nil
+}
+
+func (i mockIngester) AllUserStats(ctx context.Context, in *client.UserStatsRequest, opts ...grpc.CallOption) (*client.UsersStatsResponse, error) {
+	return &i.stats, nil
 }
 
 func TestDistributorPush(t *testing.T) {
@@ -165,7 +170,7 @@ func TestDistributorPush(t *testing.T) {
 				IngestionRateLimit:  10000,
 				IngestionBurstSize:  10000,
 
-				ingesterClientFactory: func(addr string, _ time.Duration, _ bool) (client.IngesterClient, error) {
+				ingesterClientFactory: func(addr string, _ client.Config) (client.IngesterClient, error) {
 					return ingesters[addr], nil
 				},
 			}, ring)
@@ -305,7 +310,7 @@ func TestDistributorQuery(t *testing.T) {
 				IngestionRateLimit:  10000,
 				IngestionBurstSize:  10000,
 
-				ingesterClientFactory: func(addr string, _ time.Duration, _ bool) (client.IngesterClient, error) {
+				ingesterClientFactory: func(addr string, _ client.Config) (client.IngesterClient, error) {
 					return ingesters[addr], nil
 				},
 			}, ring)

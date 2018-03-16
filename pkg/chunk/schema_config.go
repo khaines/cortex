@@ -32,24 +32,26 @@ type SchemaConfig struct {
 	V7SchemaFrom     util.DayValue
 	V8SchemaFrom     util.DayValue
 
+	// Master 'off-switch' for table capacity updates, e.g. when troubleshooting
+	ThroughputUpdatesDisabled bool
+
 	// Period with which the table manager will poll for tables.
 	DynamoDBPollInterval time.Duration
 
 	// duration a table will be created before it is needed.
 	CreationGracePeriod time.Duration
-	MaxChunkAge         time.Duration
 
 	// Config for the index & chunk tables.
 	OriginalTableName string
 	UsePeriodicTables bool
-	IndexTables       periodicTableConfig
-	ChunkTables       periodicTableConfig
+	IndexTables       PeriodicTableConfig
+	ChunkTables       PeriodicTableConfig
 
 	// Deprecated configuration for setting tags on all tables.
 	Tags Tags
 }
 
-// RegisterFlags adds the flags required to config this to the given FlagSet
+// RegisterFlags adds the flags required to config this to the given FlagSet.
 func (cfg *SchemaConfig) RegisterFlags(f *flag.FlagSet) {
 	f.Var(&cfg.DailyBucketsFrom, "dynamodb.daily-buckets-from", "The date (in the format YYYY-MM-DD) of the first day for which DynamoDB index buckets should be day-sized vs. hour-sized.")
 	f.Var(&cfg.Base64ValuesFrom, "dynamodb.base64-buckets-from", "The date (in the format YYYY-MM-DD) after which we will stop querying to non-base64 encoded values.")
@@ -59,6 +61,7 @@ func (cfg *SchemaConfig) RegisterFlags(f *flag.FlagSet) {
 	f.Var(&cfg.V7SchemaFrom, "dynamodb.v7-schema-from", "The date (in the format YYYY-MM-DD) after which we enable v7 schema.")
 	f.Var(&cfg.V8SchemaFrom, "dynamodb.v8-schema-from", "The date (in the format YYYY-MM-DD) after which we enable v8 schema.")
 
+	f.BoolVar(&cfg.ThroughputUpdatesDisabled, "table-manager.throughput-updates-disabled", false, "If true, disable all changes to DB capacity")
 	f.DurationVar(&cfg.DynamoDBPollInterval, "dynamodb.poll-interval", 2*time.Minute, "How frequently to poll DynamoDB to learn our capacity.")
 	f.DurationVar(&cfg.CreationGracePeriod, "dynamodb.periodic-table.grace-period", 10*time.Minute, "DynamoDB periodic tables grace period (duration which table will be created/deleted before/after it's needed).")
 
@@ -149,7 +152,8 @@ func (cfg SchemaConfig) dailyBuckets(from, through model.Time, userID string) []
 	return result
 }
 
-type periodicTableConfig struct {
+// PeriodicTableConfig is configuration for a set of time-sharded tables.
+type PeriodicTableConfig struct {
 	From   util.DayValue
 	Prefix string
 	Period time.Duration
@@ -160,8 +164,8 @@ type periodicTableConfig struct {
 	InactiveWriteThroughput    int64
 	InactiveReadThroughput     int64
 
-	WriteScale              autoScalingConfig
-	InactiveWriteScale      autoScalingConfig
+	WriteScale              AutoScalingConfig
+	InactiveWriteScale      AutoScalingConfig
 	InactiveWriteScaleLastN int64
 
 	// Temporarily in place to support tags set on all tables, as means of
@@ -169,7 +173,8 @@ type periodicTableConfig struct {
 	globalTags *Tags
 }
 
-func (cfg *periodicTableConfig) RegisterFlags(argPrefix, tablePrefix string, f *flag.FlagSet) {
+// RegisterFlags adds the flags required to config this to the given FlagSet.
+func (cfg *PeriodicTableConfig) RegisterFlags(argPrefix, tablePrefix string, f *flag.FlagSet) {
 	f.Var(&cfg.From, argPrefix+".from", "Date after which to write chunks to DynamoDB.")
 	f.StringVar(&cfg.Prefix, argPrefix+".prefix", tablePrefix, "DynamoDB table prefix for period tables.")
 	f.DurationVar(&cfg.Period, argPrefix+".period", 7*24*time.Hour, "DynamoDB table period.")
@@ -186,7 +191,8 @@ func (cfg *periodicTableConfig) RegisterFlags(argPrefix, tablePrefix string, f *
 	f.Int64Var(&cfg.InactiveWriteScaleLastN, argPrefix+".inactive-write-throughput.scale-last-n", 4, "Number of last inactive tables to enable write autoscale.")
 }
 
-type autoScalingConfig struct {
+// AutoScalingConfig for DynamoDB tables.
+type AutoScalingConfig struct {
 	Enabled     bool
 	RoleARN     string
 	MinCapacity int64
@@ -196,7 +202,8 @@ type autoScalingConfig struct {
 	TargetValue float64
 }
 
-func (cfg *autoScalingConfig) RegisterFlags(argPrefix string, f *flag.FlagSet) {
+// RegisterFlags adds the flags required to config this to the given FlagSet.
+func (cfg *AutoScalingConfig) RegisterFlags(argPrefix string, f *flag.FlagSet) {
 	f.BoolVar(&cfg.Enabled, argPrefix+".enabled", false, "Should we enable autoscale for the table.")
 	f.StringVar(&cfg.RoleARN, argPrefix+".role-arn", "", "AWS AutoScaling role ARN")
 	f.Int64Var(&cfg.MinCapacity, argPrefix+".min-capacity", 3000, "DynamoDB minimum provision capacity.")
@@ -206,7 +213,7 @@ func (cfg *autoScalingConfig) RegisterFlags(argPrefix string, f *flag.FlagSet) {
 	f.Float64Var(&cfg.TargetValue, argPrefix+".target-value", 80, "DynamoDB target ratio of consumed capacity to provisioned capacity.")
 }
 
-func (cfg *periodicTableConfig) periodicTables(beginGrace, endGrace time.Duration) []TableDesc {
+func (cfg *PeriodicTableConfig) periodicTables(beginGrace, endGrace time.Duration) []TableDesc {
 	var (
 		periodSecs     = int64(cfg.Period / time.Second)
 		beginGraceSecs = int64(beginGrace / time.Second)
@@ -255,7 +262,7 @@ func (cfg *periodicTableConfig) periodicTables(beginGrace, endGrace time.Duratio
 
 // GetTags returns tags for the table. Exists to provide backwards
 // compatibility for the command-line.
-func (cfg *periodicTableConfig) GetTags() Tags {
+func (cfg *PeriodicTableConfig) GetTags() Tags {
 	tags := Tags(map[string]string{})
 	for k, v := range cfg.Tags {
 		tags[k] = v
@@ -268,7 +275,8 @@ func (cfg *periodicTableConfig) GetTags() Tags {
 	return tags
 }
 
-func (cfg *periodicTableConfig) TableFor(t model.Time) string {
+// TableFor calculates the table shard for a given point in time.
+func (cfg *PeriodicTableConfig) TableFor(t model.Time) string {
 	var (
 		periodSecs = int64(cfg.Period / time.Second)
 		table      = t.Unix() / periodSecs

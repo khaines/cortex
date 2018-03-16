@@ -26,13 +26,14 @@ import (
 
 // Error represents semantical errors on parsing rule groups.
 type Error struct {
-	Group string
-	Rule  int
-	Err   error
+	Group    string
+	Rule     int
+	RuleName string
+	Err      error
 }
 
 func (err *Error) Error() string {
-	return errors.Wrapf(err.Err, "group %q, rule %d", err.Group, err.Rule).Error()
+	return errors.Wrapf(err.Err, "group %q, rule %d, %q", err.Group, err.Rule, err.RuleName).Error()
 }
 
 // RuleGroups is a set of rule groups that are typically exposed in a file.
@@ -67,10 +68,17 @@ func (g *RuleGroups) Validate() (errs []error) {
 
 		for i, r := range g.Rules {
 			for _, err := range r.Validate() {
+				var ruleName string
+				if r.Alert != "" {
+					ruleName = r.Alert
+				} else {
+					ruleName = r.Record
+				}
 				errs = append(errs, &Error{
-					Group: g.Name,
-					Rule:  i,
-					Err:   err,
+					Group:    g.Name,
+					Rule:     i,
+					RuleName: ruleName,
+					Err:      err,
 				})
 			}
 		}
@@ -166,15 +174,20 @@ func checkOverflow(m map[string]interface{}, ctx string) error {
 	return nil
 }
 
-// ParseFile parses the rule file and validates it.
+// Parse parses and validates a set of rules.
+func Parse(content []byte) (*RuleGroups, []error) {
+	var groups RuleGroups
+	if err := yaml.Unmarshal(content, &groups); err != nil {
+		return nil, []error{err}
+	}
+	return &groups, groups.Validate()
+}
+
+// ParseFile reads and parses rules from a file.
 func ParseFile(file string) (*RuleGroups, []error) {
 	b, err := ioutil.ReadFile(file)
 	if err != nil {
 		return nil, []error{err}
 	}
-	var groups RuleGroups
-	if err := yaml.Unmarshal(b, &groups); err != nil {
-		return nil, []error{err}
-	}
-	return &groups, groups.Validate()
+	return Parse(b)
 }

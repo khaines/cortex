@@ -14,6 +14,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/go-kit/kit/log/level"
+	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/pkg/labels"
@@ -68,8 +69,8 @@ type Distributor struct {
 // Config contains the configuration require to
 // create a Distributor
 type Config struct {
-	EnableBilling bool
-	BillingConfig billing.Config
+	EnableBilling        bool
+	BillingConfig        billing.Config
 	IngesterClientConfig ingester_client.Config
 
 	ReplicationFactor   int
@@ -77,10 +78,9 @@ type Config struct {
 	ClientCleanupPeriod time.Duration
 	IngestionRateLimit  float64
 	IngestionBurstSize  int
-	CompressToIngester  bool
 
 	// for testing
-	ingesterClientFactory func(addr string, timeout time.Duration, withCompression bool,cfg ingester_client.Config) (client.IngesterClient, error)
+	ingesterClientFactory func(addr string, cfg ingester_client.Config) (client.IngesterClient, error)
 }
 
 // RegisterFlags adds the flags required to config this to the given FlagSet
@@ -93,7 +93,6 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 	flag.DurationVar(&cfg.ClientCleanupPeriod, "distributor.client-cleanup-period", 15*time.Second, "How frequently to clean up clients for ingesters that have gone away.")
 	flag.Float64Var(&cfg.IngestionRateLimit, "distributor.ingestion-rate-limit", 25000, "Per-user ingestion rate limit in samples per second.")
 	flag.IntVar(&cfg.IngestionBurstSize, "distributor.ingestion-burst-size", 50000, "Per-user allowed ingestion burst size (in number of samples).")
-	flag.BoolVar(&cfg.CompressToIngester, "distributor.compress-to-ingester", false, "Compress data in calls to ingesters.")
 }
 
 // New constructs a new Distributor
@@ -225,7 +224,7 @@ func (d *Distributor) getClientFor(ingester *ring.IngesterDesc) (client.Ingester
 		return client, nil
 	}
 
-	client, err := d.cfg.ingesterClientFactory(ingester.Addr, d.cfg.RemoteTimeout, d.cfg.CompressToIngester,d.cfg.IngesterClientConfig)
+	client, err := d.cfg.ingesterClientFactory(ingester.Addr, d.cfg.IngesterClientConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +349,14 @@ func (d *Distributor) Push(ctx context.Context, req *client.WriteRequest) (*clie
 	}
 	for ingester, samples := range samplesByIngester {
 		go func(ingester *ring.IngesterDesc, samples []*sampleTracker) {
-			d.sendSamples(ctx, ingester, samples, &pushTracker)
+			// Use a background context to make sure all ingesters get samples even if we return early
+			localCtx, cancel := context.WithTimeout(context.Background(), d.cfg.RemoteTimeout)
+			defer cancel()
+			localCtx = user.InjectOrgID(localCtx, userID)
+			if sp := opentracing.SpanFromContext(ctx); sp != nil {
+				localCtx = opentracing.ContextWithSpan(localCtx, sp)
+			}
+			d.sendSamples(localCtx, ingester, samples, &pushTracker)
 		}(ingester, samples)
 	}
 	select {
@@ -652,6 +658,54 @@ func (d *Distributor) UserStats(ctx context.Context) (*UserStats, error) {
 	totalStats.NumSeries /= uint64(d.cfg.ReplicationFactor)
 
 	return totalStats, nil
+}
+
+// UserIDStats models ingestion statistics for one user, including the user ID
+type UserIDStats struct {
+	UserID string `json:"userID"`
+	UserStats
+}
+
+// AllUserStats returns statistics about all users.
+// Note it does not divide by the ReplicationFactor like UserStats()
+func (d *Distributor) AllUserStats(ctx context.Context) ([]UserIDStats, error) {
+	// Add up by user, across all responses from ingesters
+	perUserTotals := make(map[string]UserStats)
+
+	req := &client.UserStatsRequest{}
+	ctx = user.InjectOrgID(ctx, "1") // fake: ingester insists on having an org ID
+	// Not using d.forAllIngesters(), so we can fail after first error.
+	ingesters := d.ring.GetAll()
+	for _, ingester := range ingesters {
+		client, err := d.getClientFor(ingester)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := client.AllUserStats(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		for _, u := range resp.Stats {
+			s := perUserTotals[u.UserId]
+			s.IngestionRate += u.Data.IngestionRate
+			s.NumSeries += u.Data.NumSeries
+			perUserTotals[u.UserId] = s
+		}
+	}
+
+	// Turn aggregated map into a slice for return
+	response := make([]UserIDStats, 0, len(perUserTotals))
+	for id, stats := range perUserTotals {
+		response = append(response, UserIDStats{
+			UserID: id,
+			UserStats: UserStats{
+				IngestionRate: stats.IngestionRate,
+				NumSeries:     stats.NumSeries,
+			},
+		})
+	}
+
+	return response, nil
 }
 
 // Describe implements prometheus.Collector.

@@ -2,6 +2,7 @@ package configs
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/rules"
@@ -26,8 +27,9 @@ type Config struct {
 // _version_ of a configuration a unique ID and guarantees that later versions
 // have greater IDs.
 type View struct {
-	ID     ID     `json:"id"`
-	Config Config `json:"config"`
+	ID        ID        `json:"id"`
+	Config    Config    `json:"config"`
+	DeletedAt time.Time `json:"deleted_at"`
 }
 
 // GetVersionedRulesConfig specializes the view to just the rules config.
@@ -36,8 +38,9 @@ func (v View) GetVersionedRulesConfig() *VersionedRulesConfig {
 		return nil
 	}
 	return &VersionedRulesConfig{
-		ID:     v.ID,
-		Config: v.Config.RulesFiles,
+		ID:        v.ID,
+		Config:    v.Config.RulesFiles,
+		DeletedAt: v.DeletedAt,
 	}
 }
 
@@ -63,14 +66,14 @@ func (c RulesConfig) Equal(o RulesConfig) bool {
 // Parse rules from the Cortex configuration.
 //
 // Strongly inspired by `loadGroups` in Prometheus.
-func (c RulesConfig) Parse() ([]rules.Rule, error) {
-	result := []rules.Rule{}
+func (c RulesConfig) Parse() (map[string][]rules.Rule, error) {
+	result := map[string][]rules.Rule{}
 	for fn, content := range c {
 		stmts, err := promql.ParseStmts(content)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing %s: %s", fn, err)
 		}
-
+		ra := []rules.Rule{}
 		for _, stmt := range stmts {
 			var rule rules.Rule
 
@@ -84,8 +87,9 @@ func (c RulesConfig) Parse() ([]rules.Rule, error) {
 			default:
 				return nil, fmt.Errorf("ruler.GetRules: unknown statement type")
 			}
-			result = append(result, rule)
+			ra = append(ra, rule)
 		}
+		result[fn] = ra
 	}
 	return result, nil
 }
@@ -93,6 +97,12 @@ func (c RulesConfig) Parse() ([]rules.Rule, error) {
 // VersionedRulesConfig is a RulesConfig together with a version.
 // `data Versioned a = Versioned { id :: ID , config :: a }`
 type VersionedRulesConfig struct {
-	ID     ID          `json:"id"`
-	Config RulesConfig `json:"config"`
+	ID        ID          `json:"id"`
+	Config    RulesConfig `json:"config"`
+	DeletedAt time.Time   `json:"deleted_at"`
+}
+
+// IsDeleted tells you if the config is deleted.
+func (vr VersionedRulesConfig) IsDeleted() bool {
+	return !vr.DeletedAt.IsZero()
 }

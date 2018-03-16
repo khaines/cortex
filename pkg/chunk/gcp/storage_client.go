@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"cloud.google.com/go/bigtable"
+	ot "github.com/opentracing/opentracing-go"
+	otlog "github.com/opentracing/opentracing-go/log"
 
 	"github.com/pkg/errors"
 	"github.com/weaveworks/cortex/pkg/chunk"
@@ -108,26 +110,25 @@ func (s *storageClient) BatchWrite(ctx context.Context, batch chunk.WriteBatch) 
 }
 
 func (s *storageClient) QueryPages(ctx context.Context, query chunk.IndexQuery, callback func(result chunk.ReadBatch, lastPage bool) (shouldContinue bool)) error {
+	sp, ctx := ot.StartSpanFromContext(ctx, "QueryPages", ot.Tag{Key: "tableName", Value: query.TableName}, ot.Tag{Key: "hashValue", Value: query.HashValue})
+	defer sp.Finish()
+
 	table := s.client.Open(query.TableName)
 
 	var rowRange bigtable.RowRange
 	if len(query.RangeValuePrefix) > 0 {
 		rowRange = bigtable.PrefixRange(query.HashValue + separator + string(query.RangeValuePrefix))
 	} else if len(query.RangeValueStart) > 0 {
-		rowRange = bigtable.InfiniteRange(query.HashValue + separator + string(query.RangeValueStart))
+		rowRange = bigtable.NewRange(query.HashValue+separator+string(query.RangeValueStart), query.HashValue+separator+string('\xff'))
 	} else {
 		rowRange = bigtable.PrefixRange(query.HashValue + separator)
 	}
 
 	err := table.ReadRows(ctx, rowRange, func(r bigtable.Row) bool {
-		// Bigtable doesn't know when to stop, as we're reading "until the end of the
-		// row" in DynamoDB.  So we need to check the prefix of the row is still correct.
-		if !strings.HasPrefix(r.Key(), query.HashValue+separator) {
-			return false
-		}
 		return callback(bigtableReadBatch(r), false)
 	}, bigtable.RowFilter(bigtable.FamilyFilter(columnFamily)))
 	if err != nil {
+		sp.LogFields(otlog.String("error", err.Error()))
 		return errors.WithStack(err)
 	}
 	return nil
@@ -197,6 +198,10 @@ func (s *storageClient) PutChunks(ctx context.Context, chunks []chunk.Chunk) err
 }
 
 func (s *storageClient) GetChunks(ctx context.Context, input []chunk.Chunk) ([]chunk.Chunk, error) {
+	sp, ctx := ot.StartSpanFromContext(ctx, "GetChunks")
+	defer sp.Finish()
+	sp.LogFields(otlog.Int("chunks requested", len(input)))
+
 	chunks := map[string]map[string]chunk.Chunk{}
 	keys := map[string]bigtable.RowList{}
 	for _, c := range input {
@@ -223,24 +228,35 @@ func (s *storageClient) GetChunks(ctx context.Context, input []chunk.Chunk) ([]c
 			page := keys[i:util.Min(i+maxRowReads, len(keys))]
 			go func(page bigtable.RowList) {
 				decodeContext := chunk.NewDecodeContext()
+
+				var processingErr error
+				var recievedChunks = 0
+
 				// rows are returned in key order, not order in row list
-				if err := table.ReadRows(ctx, page, func(row bigtable.Row) bool {
+				err := table.ReadRows(ctx, page, func(row bigtable.Row) bool {
 					chunk, ok := chunks[row.Key()]
 					if !ok {
-						errs <- fmt.Errorf("Got row for unknown chunk: %s", row.Key())
+						processingErr = errors.WithStack(fmt.Errorf("Got row for unknown chunk: %s", row.Key()))
 						return false
 					}
 
 					err := chunk.Decode(decodeContext, row[columnFamily][0].Value)
 					if err != nil {
-						errs <- err
+						processingErr = err
 						return false
 					}
 
+					recievedChunks++
 					outs <- chunk
 					return true
-				}); err != nil {
+				})
+
+				if processingErr != nil {
+					errs <- processingErr
+				} else if err != nil {
 					errs <- errors.WithStack(err)
+				} else if recievedChunks < len(page) {
+					errs <- errors.WithStack(fmt.Errorf("Asked for %d chunks for BigTable, received %d", len(page), recievedChunks))
 				}
 			}(page)
 		}
@@ -253,6 +269,8 @@ func (s *storageClient) GetChunks(ctx context.Context, input []chunk.Chunk) ([]c
 			output = append(output, c)
 		case err := <-errs:
 			return nil, err
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
 

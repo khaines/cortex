@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/web/api/v1"
+	"github.com/prometheus/tsdb"
 	"google.golang.org/grpc"
 
 	"github.com/weaveworks/common/middleware"
@@ -56,7 +57,6 @@ func main() {
 		&ingesterConfig, &configStoreConfig, &rulerConfig, &storageConfig, &schemaConfig, &logLevel)
 	flag.BoolVar(&unauthenticated, "unauthenticated", false, "Set to true to disable multitenancy.")
 	flag.Parse()
-	schemaConfig.MaxChunkAge = ingesterConfig.MaxChunkAge
 
 	// Setting the environment variable JAEGER_AGENT_HOST enables tracing
 	jaegerAgentHost := os.Getenv("JAEGER_AGENT_HOST")
@@ -115,7 +115,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	tableManager, err := chunk.NewTableManager(schemaConfig, tableClient)
+	tableManager, err := chunk.NewTableManager(schemaConfig, ingesterConfig.MaxChunkAge, tableClient)
 	if err != nil {
 		level.Error(util.Logger).Log("msg", "error initializing DynamoDB table manager", "err", err)
 		os.Exit(1)
@@ -155,6 +155,8 @@ func main() {
 		querier.DummyAlertmanagerRetriever{},
 		func() config.Config { return config.Config{} },
 		func(f http.HandlerFunc) http.HandlerFunc { return f },
+		func() *tsdb.DB { return nil }, // Only needed for admin APIs.
+		false, // Disable admin APIs.
 	)
 	promRouter := route.New().WithPrefix("/api/prom/api/v1")
 	api.Register(promRouter)

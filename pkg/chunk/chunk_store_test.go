@@ -25,9 +25,9 @@ import (
 func newTestChunkStore(t *testing.T, cfg StoreConfig) *Store {
 	storage := NewMockStorage()
 	schemaCfg := SchemaConfig{}
-	tableManager, err := NewTableManager(schemaCfg, storage)
+	tableManager, err := NewTableManager(schemaCfg, maxChunkAge, storage)
 	require.NoError(t, err)
-	err = tableManager.syncTables(context.Background())
+	err = tableManager.SyncTables(context.Background())
 	require.NoError(t, err)
 	store, err := NewStore(cfg, schemaCfg, storage)
 	require.NoError(t, err)

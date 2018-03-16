@@ -10,6 +10,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/golang/snappy"
 	ot "github.com/opentracing/opentracing-go"
@@ -73,7 +74,7 @@ func NewChunk(userID string, fp model.Fingerprint, metric model.Metric, c prom_c
 	}
 }
 
-// parseExternalKey is used to construct a partially-populated chunk from the
+// ParseExternalKey is used to construct a partially-populated chunk from the
 // key in DynamoDB.  This chunk can then be used to calculate the key needed
 // to fetch the Chunk data from Memcache/S3, and then fully populate the chunk
 // with decode().
@@ -86,7 +87,7 @@ func NewChunk(userID string, fp model.Fingerprint, metric model.Metric, c prom_c
 // Post-checksums, externals keys become the same across DynamoDB, Memcache
 // and S3.  Numbers become hex encoded.  Keys look like:
 // `<user id>/<fingerprint>:<start time>:<end time>:<checksum>`.
-func parseExternalKey(userID, externalKey string) (Chunk, error) {
+func ParseExternalKey(userID, externalKey string) (Chunk, error) {
 	if !strings.Contains(externalKey, "/") {
 		return parseLegacyChunkID(userID, externalKey)
 	}
@@ -176,6 +177,10 @@ func (c *Chunk) ExternalKey() string {
 	return fmt.Sprintf("%s/%d:%d:%d", c.UserID, uint64(c.Fingerprint), int64(c.From), int64(c.Through))
 }
 
+var writerPool = sync.Pool{
+	New: func() interface{} { return snappy.NewWriter(nil) },
+}
+
 // Encode writes the chunk out to a big write buffer, then calculates the checksum.
 func (c *Chunk) Encode() ([]byte, error) {
 	var buf bytes.Buffer
@@ -187,7 +192,10 @@ func (c *Chunk) Encode() ([]byte, error) {
 	}
 
 	// Encode chunk metadata into snappy-compressed buffer
-	if err := json.NewEncoder(snappy.NewWriter(&buf)).Encode(c); err != nil {
+	writer := writerPool.Get().(*snappy.Writer)
+	defer writerPool.Put(writer)
+	writer.Reset(&buf)
+	if err := json.NewEncoder(writer).Encode(c); err != nil {
 		return nil, err
 	}
 

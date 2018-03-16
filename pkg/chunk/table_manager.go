@@ -27,7 +27,7 @@ var (
 	syncTableDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "cortex",
 		Name:      "dynamo_sync_tables_seconds",
-		Help:      "Time spent doing syncTables.",
+		Help:      "Time spent doing SyncTables.",
 		Buckets:   prometheus.DefBuckets,
 	}, []string{"operation", "status_code"})
 	tableCapacity = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -39,6 +39,7 @@ var (
 
 func init() {
 	prometheus.MustRegister(tableCapacity)
+	prometheus.MustRegister(syncTableDuration)
 }
 
 // Tags is a string-string map that implements flag.Value.
@@ -101,18 +102,20 @@ func (ts Tags) AWSTags() []*dynamodb.Tag {
 
 // TableManager creates and manages the provisioned throughput on DynamoDB tables
 type TableManager struct {
-	client TableClient
-	cfg    SchemaConfig
-	done   chan struct{}
-	wait   sync.WaitGroup
+	client      TableClient
+	cfg         SchemaConfig
+	maxChunkAge time.Duration
+	done        chan struct{}
+	wait        sync.WaitGroup
 }
 
 // NewTableManager makes a new TableManager
-func NewTableManager(cfg SchemaConfig, tableClient TableClient) (*TableManager, error) {
+func NewTableManager(cfg SchemaConfig, maxChunkAge time.Duration, tableClient TableClient) (*TableManager, error) {
 	return &TableManager{
-		cfg:    cfg,
-		client: tableClient,
-		done:   make(chan struct{}),
+		cfg:         cfg,
+		maxChunkAge: maxChunkAge,
+		client:      tableClient,
+		done:        make(chan struct{}),
 	}, nil
 }
 
@@ -134,8 +137,8 @@ func (m *TableManager) loop() {
 	ticker := time.NewTicker(m.cfg.DynamoDBPollInterval)
 	defer ticker.Stop()
 
-	if err := instrument.TimeRequestHistogram(context.Background(), "TableManager.syncTables", syncTableDuration, func(ctx context.Context) error {
-		return m.syncTables(ctx)
+	if err := instrument.TimeRequestHistogram(context.Background(), "TableManager.SyncTables", syncTableDuration, func(ctx context.Context) error {
+		return m.SyncTables(ctx)
 	}); err != nil {
 		level.Error(util.Logger).Log("msg", "error syncing tables", "err", err)
 	}
@@ -143,8 +146,8 @@ func (m *TableManager) loop() {
 	for {
 		select {
 		case <-ticker.C:
-			if err := instrument.TimeRequestHistogram(context.Background(), "TableManager.syncTables", syncTableDuration, func(ctx context.Context) error {
-				return m.syncTables(ctx)
+			if err := instrument.TimeRequestHistogram(context.Background(), "TableManager.SyncTables", syncTableDuration, func(ctx context.Context) error {
+				return m.SyncTables(ctx)
 			}); err != nil {
 				level.Error(util.Logger).Log("msg", "error syncing tables", "err", err)
 			}
@@ -154,9 +157,11 @@ func (m *TableManager) loop() {
 	}
 }
 
-func (m *TableManager) syncTables(ctx context.Context) error {
+// SyncTables will calculate the tables expected to exist, create those that do
+// not and update those that need it.  It is exposed for testing.
+func (m *TableManager) SyncTables(ctx context.Context) error {
 	expected := m.calculateExpectedTables()
-	level.Info(util.Logger).Log("msg", "synching tables", "num_expected_tables", len(expected), "expected_tables", expected)
+	level.Info(util.Logger).Log("msg", "synching tables", "num_expected_tables", len(expected), "expected_tables", len(expected))
 
 	toCreate, toCheckThroughput, err := m.partitionTables(ctx, expected)
 	if err != nil {
@@ -187,7 +192,7 @@ func (m *TableManager) calculateExpectedTables() []TableDesc {
 		var (
 			tablePeriodSecs = int64(m.cfg.IndexTables.Period / time.Second)
 			gracePeriodSecs = int64(m.cfg.CreationGracePeriod / time.Second)
-			maxChunkAgeSecs = int64(m.cfg.MaxChunkAge / time.Second)
+			maxChunkAgeSecs = int64(m.maxChunkAge / time.Second)
 			firstTable      = m.cfg.IndexTables.From.Unix() / tablePeriodSecs
 			now             = mtime.Now().Unix()
 		)
@@ -205,13 +210,13 @@ func (m *TableManager) calculateExpectedTables() []TableDesc {
 
 	if m.cfg.UsePeriodicTables {
 		result = append(result, m.cfg.IndexTables.periodicTables(
-			m.cfg.CreationGracePeriod, m.cfg.MaxChunkAge,
+			m.cfg.CreationGracePeriod, m.maxChunkAge,
 		)...)
 	}
 
 	if m.cfg.ChunkTables.From.IsSet() {
 		result = append(result, m.cfg.ChunkTables.periodicTables(
-			m.cfg.CreationGracePeriod, m.cfg.MaxChunkAge,
+			m.cfg.CreationGracePeriod, m.maxChunkAge,
 		)...)
 	}
 
@@ -270,13 +275,17 @@ func (m *TableManager) updateTables(ctx context.Context, descriptions []TableDes
 			return err
 		}
 
+		tableCapacity.WithLabelValues(readLabel, expected.Name).Set(float64(current.ProvisionedRead))
+		tableCapacity.WithLabelValues(writeLabel, expected.Name).Set(float64(current.ProvisionedWrite))
+
+		if m.cfg.ThroughputUpdatesDisabled {
+			continue
+		}
+
 		if status != dynamodb.TableStatusActive {
 			level.Info(util.Logger).Log("msg", "skipping update on table, not yet ACTIVE", "table", expected.Name, "status", status)
 			continue
 		}
-
-		tableCapacity.WithLabelValues(readLabel, expected.Name).Set(float64(current.ProvisionedRead))
-		tableCapacity.WithLabelValues(writeLabel, expected.Name).Set(float64(current.ProvisionedWrite))
 
 		if expected.Equals(current) {
 			level.Info(util.Logger).Log("msg", "provisioned throughput on table, skipping", "table", current.Name, "read", current.ProvisionedRead, "write", current.ProvisionedWrite)
@@ -289,5 +298,38 @@ func (m *TableManager) updateTables(ctx context.Context, descriptions []TableDes
 			return err
 		}
 	}
+	return nil
+}
+
+// ExpectTables compares existing tables to an expected set of tables.  Exposed
+// for testing,
+func ExpectTables(ctx context.Context, client TableClient, expected []TableDesc) error {
+	tables, err := client.ListTables(ctx)
+	if err != nil {
+		return err
+	}
+
+	if len(expected) != len(tables) {
+		return fmt.Errorf("Unexpected number of tables: %v != %v", expected, tables)
+	}
+
+	sort.Strings(tables)
+	sort.Sort(byName(expected))
+
+	for i, expect := range expected {
+		if tables[i] != expect.Name {
+			return fmt.Errorf("Expected '%s', found '%s'", expect.Name, tables[i])
+		}
+
+		desc, _, err := client.DescribeTable(ctx, expect.Name)
+		if err != nil {
+			return err
+		}
+
+		if !desc.Equals(expect) {
+			return fmt.Errorf("Expected '%v', found '%v' for table '%s'", expect, desc, desc.Name)
+		}
+	}
+
 	return nil
 }
