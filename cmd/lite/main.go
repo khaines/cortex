@@ -57,10 +57,10 @@ func main() {
 		&ingesterConfig, &configStoreConfig, &rulerConfig, &storageConfig, &schemaConfig, &logLevel)
 	flag.BoolVar(&unauthenticated, "unauthenticated", false, "Set to true to disable multitenancy.")
 	flag.Parse()
+	ingesterConfig.SetClientConfig(distributorConfig.IngesterClientConfig)
 
 	// Setting the environment variable JAEGER_AGENT_HOST enables tracing
-	jaegerAgentHost := os.Getenv("JAEGER_AGENT_HOST")
-	trace := tracing.New(jaegerAgentHost, "lite")
+	trace := tracing.NewFromEnv("ingester")
 	defer trace.Close()
 
 	util.InitLogger(logLevel.AllowedLevel)
