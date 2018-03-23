@@ -10,13 +10,14 @@ build:
     - cloud
   only: 
     - cloud-master
+    - tags
   script:
     - apt-get install -y time
     - go get -u github.com/golang/dep/cmd/dep
     - mkdir -p $GOPATH/src/github.com/weaveworks
     - cp -R $PWD $GOPATH/src/github.com/weaveworks
     - cd $GOPATH/src/github.com/weaveworks/cortex
-    - make update-vendor
+    - make update-vendor TTY=""
     - make BUILD_IN_CONTAINER=true IMAGE_PREFIX=docker-ops-intel.darkside.ea.com/cortex-
     - docker login docker-ops-intel.darkside.ea.com -u $DOCKER_OPSINTEL_USERNAME -p $DOCKER_OPSINTEL_PASSWORD
     - IMAGE_PREFIX=docker-ops-intel.darkside.ea.com/cortex- ./tools/push-images 
