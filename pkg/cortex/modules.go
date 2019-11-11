@@ -373,7 +373,10 @@ func (t *Cortex) initRuler(cfg *Config) (err error) {
 		return
 	}
 
-	t.server.HTTP.Handle("/ruler_ring", t.ruler)
+	t.server.HTTP.HandleFunc("/ruler_ring", t.ruler.HandleRulerRing)
+	// endpoints added from addressing issue #1720
+	t.server.HTTP.HandleFunc("/rules",t.ruler.HandleRules)
+	t.server.HTTP.HandleFunc("/alerts",t.ruler.HandleAlerts)
 	return
 }
 

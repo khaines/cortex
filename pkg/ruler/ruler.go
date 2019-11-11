@@ -356,7 +356,7 @@ func (r *Ruler) ownsRule(hash uint32) bool {
 	return false
 }
 
-func (r *Ruler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+func (r *Ruler) HandleRulerRing(w http.ResponseWriter, req *http.Request) {
 	if r.cfg.EnableSharding {
 		r.ring.ServeHTTP(w, req)
 	} else {
@@ -376,3 +376,6 @@ func (r *Ruler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.Write([]byte(unshardedPage))
 	}
 }
+
+func (r *Ruler) HandleRules(w http.ResponseWriter, req *http.Request) {}
+func (r *Ruler) HandleAlerts(w http.ResponseWriter, req *http.Request) {}
