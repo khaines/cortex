@@ -375,8 +375,8 @@ func (t *Cortex) initRuler(cfg *Config) (err error) {
 
 	t.server.HTTP.HandleFunc("/ruler_ring", t.ruler.HandleRulerRing)
 	// endpoints added from addressing issue #1720
-	t.server.HTTP.HandleFunc("/rules",t.ruler.HandleRules)
-	t.server.HTTP.HandleFunc("/alerts",t.ruler.HandleAlerts)
+	t.server.HTTP.Handle("/api/v1/rules",t.httpAuthMiddleware.Wrap(http.HandlerFunc(t.ruler.HandleAlerts)))
+	t.server.HTTP.Handle("/api/v1/alerts",t.httpAuthMiddleware.Wrap(http.HandlerFunc(t.ruler.HandleAlerts)))
 	return
 }
 

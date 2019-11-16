@@ -356,6 +356,7 @@ func (r *Ruler) ownsRule(hash uint32) bool {
 	return false
 }
 
+// HandleRulerRing returns details about the rulers currently in the ring
 func (r *Ruler) HandleRulerRing(w http.ResponseWriter, req *http.Request) {
 	if r.cfg.EnableSharding {
 		r.ring.ServeHTTP(w, req)
@@ -377,5 +378,25 @@ func (r *Ruler) HandleRulerRing(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (r *Ruler) HandleRules(w http.ResponseWriter, req *http.Request) {}
-func (r *Ruler) HandleAlerts(w http.ResponseWriter, req *http.Request) {}
+// HandleRules will return the details of the currently configured rules.
+// Gathers data from all rulers in the ring to create a complete set.
+// Intended to provide similar functionality to https://prometheus.io/docs/prometheus/latest/querying/api/#rules
+func (r *Ruler) HandleRules(w http.ResponseWriter, req *http.Request) {
+	orgID,ctx,err:= user.ExtractOrgIDFromHTTPRequest(req)
+	// Is this call for just this ruler's data? (ie: a call from another ruler gathering a full set)
+	// check if there is sharding enabled
+		// if sharding, call all rulers in ring for their data
+	// retrieve this rulers data and combine it with any existing data for the result
+
+}
+
+// HandleAlerts will return the details for active alerts.
+// Gathers data from all rulers in the ring to create a complete set.
+// Intended to provide similar functionality to https://prometheus.io/docs/prometheus/latest/querying/api/#alerts
+func (r *Ruler) HandleAlerts(w http.ResponseWriter, req *http.Request) {
+	orgID,ctx,err:= user.ExtractOrgIDFromHTTPRequest(req)
+	// Is this call for just this ruler's data? (ie: a call from another ruler gathering a full set)
+	// check if there is sharding enabled
+		// if sharding, call all rulers in ring for their data
+	// retrieve this rulers data and combine it with any existing data for the result
+}
