@@ -31,6 +31,9 @@ import (
 	"github.com/weaveworks/common/user"
 )
 
+const(
+	singleRulerModeHeader = "X-Single-Ruler"
+)
 var (
 	evalDuration = instrument.NewHistogramCollectorFromOpts(prometheus.HistogramOpts{
 		Namespace: "cortex",
@@ -383,9 +386,25 @@ func (r *Ruler) HandleRulerRing(w http.ResponseWriter, req *http.Request) {
 // Intended to provide similar functionality to https://prometheus.io/docs/prometheus/latest/querying/api/#rules
 func (r *Ruler) HandleRules(w http.ResponseWriter, req *http.Request) {
 	orgID,ctx,err:= user.ExtractOrgIDFromHTTPRequest(req)
+	if err !=nil{
+		level.Error(util.Logger).Log("msg", "error extracting orgID from http header","error",err.Error())
+		//todo: align error returns with other http serving component behaviour.
+		w.WriteHeader(500)
+		w.Write([]byte(""))
+		return
+	}
+	// get span instance 
+	sp, ctx := ot.StartSpanFromContext(ctx, "HandleRules")
+	defer sp.Finish()
+
+	singleRulerMode := req.Header.Get(singleRulerModeHeader)
+	
 	// Is this call for just this ruler's data? (ie: a call from another ruler gathering a full set)
 	// check if there is sharding enabled
+	if r.cfg.EnableSharding && singleRulerMode != "1" {
 		// if sharding, call all rulers in ring for their data
+	}
+		
 	// retrieve this rulers data and combine it with any existing data for the result
 
 }
@@ -394,9 +413,37 @@ func (r *Ruler) HandleRules(w http.ResponseWriter, req *http.Request) {
 // Gathers data from all rulers in the ring to create a complete set.
 // Intended to provide similar functionality to https://prometheus.io/docs/prometheus/latest/querying/api/#alerts
 func (r *Ruler) HandleAlerts(w http.ResponseWriter, req *http.Request) {
-	orgID,ctx,err:= user.ExtractOrgIDFromHTTPRequest(req)
+//	orgID,ctx,err:= user.ExtractOrgIDFromHTTPRequest(req)
 	// Is this call for just this ruler's data? (ie: a call from another ruler gathering a full set)
 	// check if there is sharding enabled
 		// if sharding, call all rulers in ring for their data
 	// retrieve this rulers data and combine it with any existing data for the result
+}
+
+
+func (r *Ruler) fetchDataFromRulers(ctx context.Context, string urlPath ) error{
+
+	rulerSet, err := r.ring.GetAll()
+	if err != nil{
+		level.Error(util.Logger).Log("msg","error retrieving list of rulers from kv ring store","error",err.Error())
+		return err
+	}
+
+	
+	rulerCount := len(rulerSet.Ingesters)
+	wg := sync.WaitGroup{}
+	for x:=0;x<rulerCount;x++{
+		
+		wg.Add(1)
+	}
+
+	wg.Wait()
+
+	return nil
+}
+
+func (r *Ruler) fetchRuleDataFromRuler(ctx context.Context, addr,  urlPath string){
+
+
+
 }
