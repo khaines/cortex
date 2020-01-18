@@ -449,11 +449,16 @@ func (c *seriesStore) PutOne(ctx context.Context, from, through model.Time, chun
 			return err
 		}
 	} else {
-		err := c.storage.PutChunks(ctx, chunks)
-		if err != nil {
+		// Write to the index store first. If this is throttled it will not attempt to write the chunk.
+		// The reasoning for this order is that some of the chunk store options have a per write operation
+		// cost vs a hard throttle (S3, Azure, etc) so rapidly retrying the chunk write when the index
+		// operation gets throttled becomes expensive.
+		if err := c.index.BatchWrite(ctx, writeReqs); err != nil {
 			return err
 		}
-		if err := c.index.BatchWrite(ctx, writeReqs); err != nil {
+
+		err := c.storage.PutChunks(ctx, chunks)
+		if err != nil {
 			return err
 		}
 	}
